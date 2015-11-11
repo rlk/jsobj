@@ -80,6 +80,7 @@ function jsobj(obj) {
         positions : [],
         texCoords : [],
         normals   : [],
+        tangents  : [],
         triangles : [],
     };
 
@@ -89,7 +90,15 @@ function jsobj(obj) {
     function stringify() {
         var string = "";
 
-        function stringifyTable(name, type, a) {
+        function toValue(f) {
+            return f.toFixed(3);
+        }
+
+        function toIndex(d) {
+            return d.toString();
+        }
+
+        function stringifyTable(name, type, a, f) {
             if (a.length > 0) {
 
                 if (typed)
@@ -99,9 +108,9 @@ function jsobj(obj) {
 
                 for (var i = 0; i < a.length; i++)
                     if (flat)
-                        string += '\t\t'   + a[i].join(', ') +   ',\n';
+                        string += '\t\t'   + a[i].map(f).join(', ') +   ',\n';
                     else
-                        string += '\t\t[ ' + a[i].join(', ') + ' ],\n';
+                        string += '\t\t[ ' + a[i].map(f).join(', ') + ' ],\n';
 
                 if (typed)
                     string += '\t]),\n';
@@ -112,14 +121,84 @@ function jsobj(obj) {
 
         string += 'var ' + name + ' = {\n';
 
-        stringifyTable('positions', 'Float32Array', model.positions);
-        stringifyTable('texCoords', 'Float32Array', model.texCoords);
-        stringifyTable('normals',   'Float32Array', model.normals);
-        stringifyTable('triangles', 'Uint16Array',  model.triangles);
+        stringifyTable('positions', 'Float32Array', model.positions, toValue);
+        stringifyTable('texCoords', 'Float32Array', model.texCoords, toValue);
+        stringifyTable('normals',   'Float32Array', model.normals,   toValue);
+        stringifyTable('tangents',  'Float32Array', model.tangents,  toValue);
+        stringifyTable('triangles', 'Uint16Array',  model.triangles, toIndex);
 
         string += '}\n';
 
         return string;
+    }
+
+    // Use normals and texture coordinates to calculate tangent vectors.
+
+    function calcTangents() {
+
+        // Return the sum of the given vectors.
+
+        function add(x, y) {
+            return [x[0] + y[0], x[1] + y[1], x[2] + y[2]];
+        }
+
+        // Return the difference of the given vectors.
+
+        function subtract(x, y) {
+            return [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
+        }
+
+        // Return the cross product of the given vectors.
+
+        function cross(x, y) {
+            return [x[1] * y[2] - x[2] * y[1],
+                    x[2] * y[0] - x[0] * y[2],
+                    x[0] * y[1] - x[1] * y[0]];
+        }
+
+        // Return the normalization of the given vector.
+
+        function normalize(v) {
+            var k = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            return [v[0] / k, v[1] / k, v[2] / k];
+        }
+
+        // Return vector v made orthogonal to vector u.
+
+        function orthogonalize(u, v) {
+            return cross(cross(u, v), u);
+        }
+
+        // Compute tangent vectors for all vertices...
+
+        for (var i = 0; i < model.triangles.length; i++) {
+            var j = model.triangles[i];
+
+            // Calculate the vector tangent to triangle i.
+
+            var dp1 = subtract(model.positions[j[1]], model.positions[j[0]]);
+            var dp2 = subtract(model.positions[j[2]], model.positions[j[0]]);
+
+            var dt1 = model.texCoords[j[1]][1] - model.texCoords[j[0]][1];
+            var dt2 = model.texCoords[j[2]][1] - model.texCoords[j[0]][1];
+
+            var t = normalize([dt2 * dp1[0] - dt1 * dp2[0],
+                               dt2 * dp1[1] - dt1 * dp2[1],
+                               dt2 * dp1[2] - dt1 * dp2[2]]);
+
+            // Accumulate the tangent vector at all adjacent vertices.
+
+            model.tangents[j[0]] = add(model.tangents[j[0]], t);
+            model.tangents[j[1]] = add(model.tangents[j[1]], t);
+            model.tangents[j[2]] = add(model.tangents[j[2]], t);
+        }
+
+        // Orthonormalize all tangent space bases.
+
+        for (var i = 0; i < model.tangents.length; i++) {
+            model.tangents[i] = normalize(orthogonalize(model.normals[i],
+                                                        model.tangents[i]));
+        }
     }
 
     // Return a vertex index for the given triplet string.
@@ -150,9 +229,10 @@ function jsobj(obj) {
                 i = parseInt(a[1]);
             }
 
-            if (i) model.positions.push(v[i > 0 ? i : i + vi]);
-            if (j) model.texCoords.push(t[j > 0 ? j : j + ti]);
-            if (k) model.normals  .push(n[k > 0 ? k : k + ni]);
+            if (i)      model.positions.push(v[i > 0 ? i : i + vi]);
+            if (j)      model.texCoords.push(t[j > 0 ? j : j + ti]);
+            if (k)      model.normals  .push(n[k > 0 ? k : k + ni]);
+            if (j && k) model.tangents .push([0, 0, 0]);
         }
         return m[f];
     }
@@ -193,7 +273,10 @@ function jsobj(obj) {
         }
     }
 
-    var url  = 'data:text/json;charset=utf8,' + encodeURIComponent(stringify());
+    if (model.normals.length && model.texCoords.length)
+        calcTangents();
+
+    var url = 'data:text/json;charset=utf8,' + encodeURIComponent(stringify());
 
     window.open(url, '_blank');
     window.focus();
